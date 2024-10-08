@@ -8,7 +8,7 @@ export const adminRoute = (router) => {
 
     router.post("/admin/signin", validateRequest(adminSigninValidate), adminSignin);
 
-    router.post("/admin/addProduct", Auth, multiple, addProduct);
+    router.post("/admin/addProduct", multiple, addProduct);
 
     router.post("/admin/updateProduct", multiple, updateProduct);// auth required
 
