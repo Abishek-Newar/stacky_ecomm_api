@@ -48,11 +48,11 @@ export const UserRoute = (router) => {
 
   router.post("/user/getProducts", getProductData);
 
-  router.post("/user/getCartItems", Auth, validateRequest(getCartItemsValidate), getCartItems);
+  router.post("/user/getCartItems", validateRequest(getCartItemsValidate), getCartItems);
 
-  router.post("/user/addToCart", Auth, validateRequest(addToCartValidate), addToCart);
+  router.post("/user/addToCart", validateRequest(addToCartValidate), addToCart);
 
-  router.post("/user/removeFromCart", Auth, validateRequest(removeFromCartValidate), removeFromCart);
+  router.post("/user/removeFromCart", validateRequest(removeFromCartValidate), removeFromCart);
 
   router.post("/user/placeCartOrder", Auth, validateRequest(placeCartOrderValidate), placeCartOrder);
 

@@ -1,20 +1,12 @@
-import multer from "multer";
 import jwt from "jsonwebtoken";
-import env from "../../../infrastructure/env.js";
-import { deleteObject, getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
-import { storage } from "../../config/db.js";
 import moment from "moment";
+import mongoose from "mongoose";
+import env from "../../../infrastructure/env.js";
 import { ErrorResponse, SuccessResponse } from "../../config/helpers/apiResponse.js";
 import addProducts from "../../config/schema/adminAddProduct.schema.js";
-import userSignup from "../../config/schema/userSignup.schema.js";
 import order from "../../config/schema/order.schema.js";
-
-// Setup multer for image upload
-const upload = multer({ storage: multer.memoryStorage() });
-export let multiple = upload.fields([
-  { name: 'card_pic', maxCount: 1 }, // Only one card picture
-  { name: 'images', maxCount: 4 }    // Up to four additional images
-]);
+import userSignup from "../../config/schema/userSignup.schema.js";
+import { uploadImages, uploadUpdatedImages } from "../models/users_model.js";
 
 export const adminSignin = async (req, res) => {
   try {
@@ -37,52 +29,28 @@ export const adminSignin = async (req, res) => {
 
 export const addProduct = async (req, res) => {
   try {
+    // Step 1: Prepare the product data
     const reqData = {
       productName: req.body.productName,
       description: req.body.description,
       price: req.body.price,
       category: req.body.category,
-      quantity: req.body.quantity,
-      card_pic: null, 
-      images: [],
+      size: req.body.size.split(','),  
+      card_pic: null,
+      images: [], 
       insert_date_time: moment().format("YYYY-MM-DD HH:mm:ss"),
       update_date_time: moment().format("YYYY-MM-DD HH:mm:ss"),
     };
+    
+  const newProduct = new addProducts(reqData);
+  const savedProduct = await newProduct.save();
 
-    if (req.files?.card_pic && req.files.card_pic.length > 0) {
-      const cardPicFile = req.files.card_pic[0];
-      const storageRef = ref(storage, `product_card_img/${Date.now()}_${cardPicFile.originalname}`);
-      const metadata = {
-        contentType: cardPicFile.mimetype,
-      };
-      const uploadSnapshot = await uploadBytesResumable(storageRef, cardPicFile.buffer, metadata);
-      reqData.card_pic = await getDownloadURL(uploadSnapshot.ref);
-    } else {
-      return ErrorResponse(res, "Card picture is required.");
-    }
+  const updatedProduct = await uploadImages(req.files, savedProduct._id);
+  SuccessResponse(res, "Product added successfully with images", updatedProduct);
 
-    if (req.files?.images) {
-      const uploadPromises = req.files.images.slice(0, 4).map(async (imageFile) => {
-        const storageRef = ref(storage, `product_img/${Date.now()}_${imageFile.originalname}`);
-        const metadata = {
-          contentType: imageFile.mimetype,
-        };
-        const uploadSnapshot = await uploadBytesResumable(storageRef, imageFile.buffer, metadata);
-        const imageDownloadURL = await getDownloadURL(uploadSnapshot.ref);
-        
-        return imageDownloadURL; 
-      });
-
-      reqData.images = await Promise.all(uploadPromises);
-    }
-
-    const newProduct = new addProducts(reqData);
-    const savedProduct = await newProduct.save();
-
-    return SuccessResponse(res, "Product added successfully", { ...savedProduct.toObject() });
   } catch (error) {
-    console.error("Error adding product:", error); // Improved error logging
-    return ErrorResponse(res, "An error occurred while adding the product. Please try again later.");
+    console.error("Error in addProduct:", error.message, error.stack);
+    return ErrorResponse(res, "An error occurred while adding the product.");
   }
 };
 
@@ -102,52 +70,37 @@ export const updateProduct = async (req, res) => {
       description: req.body.description || existingProduct.description,
       price: req.body.price || existingProduct.price,
       category: req.body.category || existingProduct.category,
-      quantity: req.body.quantity || existingProduct.quantity,
+      size: req.body.size ? req.body.size.split(',') : existingProduct.size, 
+      card_pic: existingProduct.card_pic, 
+      images: existingProduct.images,
       update_date_time: moment().format("YYYY-MM-DD HH:mm:ss"),
-      card_pic: existingProduct.card_pic,
-      images: [] 
     };
 
-    if (req.files?.card_pic && req.files.card_pic.length > 0) {
-      const cardPicFile = req.files.card_pic[0];
-      const storageRef = ref(storage, `product_card_img/${Date.now()}_${cardPicFile.originalname}`);
-      const metadata = {
-        contentType: cardPicFile.mimetype,
-      };
-
-      const uploadSnapshot = await uploadBytesResumable(storageRef, cardPicFile.buffer, metadata);
-      reqData.card_pic = await getDownloadURL(uploadSnapshot.ref);
-
-      if (existingProduct.card_pic) {
-        const existingCardPicRef = ref(storage, existingProduct.card_pic);
-        await deleteObject(existingCardPicRef);
-      }
-    }
-
-    if (req.files?.images) {
-      if (existingProduct.images.length > 0) {
-        const existingImageRefs = existingProduct.images.map(image => ref(storage, image));
-        await Promise.all(existingImageRefs.map(ref => deleteObject(ref)));
-      }
-
-      const uploadPromises = req.files.images.slice(0, 4).map(async (imageFile) => {
-        const storageRef = ref(storage, `product_img/${Date.now()}_${imageFile.originalname}`);
-        const metadata = {
-          contentType: imageFile.mimetype,
-        };
-
-        const uploadSnapshot = await uploadBytesResumable(storageRef, imageFile.buffer, metadata);
-        return await getDownloadURL(uploadSnapshot.ref);
-      });
-      reqData.images = await Promise.all(uploadPromises);
-    }
-
     await addProducts.updateOne({ _id: id }, { $set: reqData });
-
-    return SuccessResponse(res, "Product updated successfully", { id, ...reqData });
+    SuccessResponse(res, "Product updated successfully, image updates in progress", { id, ...reqData });
+    await uploadUpdatedImages(req.files, existingProduct);
   } catch (error) {
     console.error("Error updating product:", error);
     return ErrorResponse(res, "An error occurred while updating the product. Please try again later.");
+  }
+};
+
+export const deleteProduct = async (req, res) => {
+  try {
+    const { id } = req.body;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return ErrorResponse(res, "Invalid product ID format.");
+    }
+    const deletedProduct = await addProducts.findByIdAndDelete(id);
+    if (!deletedProduct) {
+      return ErrorResponse(res, "Product not found.");
+    }
+
+    return SuccessResponse(res, "Product deleted successfully.");
+  } catch (error) {
+    console.error("Error deleting product:", error);
+    return ErrorResponse(res, "An error occurred while deleting the product. Please try again later.");
   }
 };
 
@@ -168,9 +121,16 @@ export const getDashboardInsights = async (req, res) => {
     });
 
     const totalRevenue = await order.aggregate([
-      { $match: {insert_date_time: {$gte: start,$lte: end}}},
+      { $match: { insert_date_time: { $gte: start, $lte: end } } },
       { $unwind: "$productDetails" },
-      { $group: { _id: null, total: { $sum: "$productDetails.price"  } } }
+      {
+        $group: {
+          _id: null,
+          total: {
+            $sum: { $multiply: ["$productDetails.price", "$totalQuantity"] },
+          },
+        },
+      },
     ]);
 
     const totalProductsSold = await order.aggregate([
@@ -179,11 +139,16 @@ export const getDashboardInsights = async (req, res) => {
     ]);
 
     const soldOutcategories = await order.aggregate([
-      {$match: {insert_date_time: { $gte: start, $lte: end }}},
-      {$project: {categoryQuantities: { $objectToArray: "$categoryQuantities" }} },
-      {$unwind: "$categoryQuantities"},
-      {$group: {_id: "$categoryQuantities.k",total: { $sum: "$categoryQuantities.v" }} }
+      { $match: { insert_date_time: { $gte: start, $lte: end } } },
+      { $unwind: "$productDetails" }, // Unwind productDetails to work with individual products
+      {
+        $group: {
+          _id: "$productDetails.category", // Group by product category
+          total: { $sum: "$totalQuantity" }, // Sum totalQuantity per category
+        },
+      },
     ]);
+    
     
     const totalcategorieProducts = await addProducts.aggregate([
       { $group: { _id: '$category', count: { $sum: 1 } } }
@@ -194,8 +159,16 @@ export const getDashboardInsights = async (req, res) => {
     const revenueByCategory = await order.aggregate([
       { $match: { insert_date_time: { $gte: start, $lte: end } } },
       { $unwind: "$productDetails" },
-      { $group: { _id: "$productDetails.category", totalRevenue: { $sum: "$productDetails.price" } } }
+      {
+        $group: {
+          _id: "$productDetails.category",
+          totalRevenue: {
+            $sum: { $multiply: ["$productDetails.price", "$totalQuantity"] },
+          },
+        },
+      },
     ]);
+    
     
     return SuccessResponse(res, "Dashboard insights fetched successfully.", {
       totalUsers,
